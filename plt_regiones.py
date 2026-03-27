@@ -8,129 +8,182 @@ Created on Tue Mar 24 19:12:53 2026
 from playwright.sync_api import sync_playwright
 
 URL = "https://app.ceplan.gob.pe/ConsultaCEPLAN/consulta/Default.aspx"
+
 ANIO = "2025"
 MODULO = "Actividades/Proyectos"
-OBJETIVO_NIVEL = "R: GOBIERNOS REGIONALES"
 
 
-def obtener_frame_operativo(page):
+# -------------------------------------------------
+# UTILIDADES
+# -------------------------------------------------
+
+def obtener_frame_principal(page):
     for frame in page.frames:
         try:
-            if frame.locator("#ctl00_CPH1_DrpYear").count() > 0:
+            if "Consulta_" in frame.url and "ActProy" in frame.url:
                 return frame
-        except Exception:
+        except:
             pass
     return None
 
 
-def esperar_frame_operativo(page, timeout_ms=20000):
+def esperar_frame_principal(page, timeout_ms=20000):
     transcurrido = 0
-    paso = 500
-
     while transcurrido < timeout_ms:
-        frame = obtener_frame_operativo(page)
-        if frame is not None:
-            try:
-                if frame.locator("#ctl00_CPH1_DrpYear").count() > 0:
-                    return frame
-            except Exception:
-                pass
+        frame = obtener_frame_principal(page)
+        if frame:
+            return frame
+        page.wait_for_timeout(500)
+        transcurrido += 500
 
-        page.wait_for_timeout(paso)
-        transcurrido += paso
-
-    raise RuntimeError("No se encontró el frame operativo dentro del tiempo esperado")
+    raise RuntimeError("No se encontró el frame principal")
 
 
-def elegir_fila_tabla(frame, patron_texto):
-    print(f"[INFO] Buscando fila: {patron_texto}")
+def esperar_selector(frame, selector, timeout=15000):
+    frame.locator(selector).wait_for(state="attached", timeout=timeout)
 
-    tabla = frame.locator("table#tbl_data")
-    if tabla.count() == 0:
-        raise RuntimeError("No se encontró la tabla #tbl_data")
 
-    filas = tabla.locator("tr")
+# -------------------------------------------------
+# ACCIONES
+# -------------------------------------------------
+
+def seleccionar_dropdown(frame, selector, valor):
+    esperar_selector(frame, selector)
+    frame.locator(selector).select_option(label=valor)
+
+
+def click_boton(frame, selector, nombre):
+    print(f"[INFO] Activando botón {nombre}...")
+
+    btn = frame.locator(selector)
+
+    if btn.count() == 0:
+        raise RuntimeError(f"No se encontró el botón {nombre}")
+
+    try:
+        btn.click(timeout=5000)
+        print(f"[OK] {nombre} con click normal")
+        return
+    except:
+        pass
+
+    try:
+        btn.click(force=True)
+        print(f"[OK] {nombre} con force=True")
+        return
+    except:
+        pass
+
+    btn.evaluate("(el) => el.click()")
+    print(f"[OK] {nombre} con JavaScript")
+
+
+# -------------------------------------------------
+# TABLA #tbl_data (primer nivel)
+# -------------------------------------------------
+
+def seleccionar_fila_tbl_data(frame, texto):
+    print(f"[INFO] Buscando fila en tbl_data: {texto}")
+
+    esperar_selector(frame, "#tbl_data")
+
+    filas = frame.locator("#tbl_data tr")
     total = filas.count()
 
-    if total == 0:
-        raise RuntimeError("No se encontraron filas en la tabla #tbl_data")
-
-    patron = patron_texto.upper()
+    objetivo = texto.upper()
 
     for i in range(total):
-        try:
-            fila = filas.nth(i)
-            contenido = fila.inner_text().upper()
+        fila = filas.nth(i)
+        contenido = fila.inner_text().upper()
 
-            if patron in contenido:
-                print(f"[OK] Fila encontrada en índice {i}")
-                fila.click()
-                return
-        except Exception:
-            pass
+        if objetivo in contenido:
+            fila.click(force=True)
+            print("[OK] Fila seleccionada")
+            return
 
-    raise RuntimeError(f"No se encontró la fila: {patron_texto}")
+    raise RuntimeError(f"No se encontró: {texto}")
 
+
+# -------------------------------------------------
+# TABLA #ctl00_CPH1_Mt0 (segundo nivel)
+# -------------------------------------------------
+
+def seleccionar_fila_por_codigo(frame, codigo):
+    print(f"[INFO] Buscando código: {codigo}")
+
+    esperar_selector(frame, "#ctl00_CPH1_Mt0")
+
+    fila = frame.locator(f"#ctl00_CPH1_Mt0 tr[onclick*=\"kCod='{codigo}'\"]")
+
+    if fila.count() == 0:
+        raise RuntimeError(f"No se encontró el código {codigo}")
+
+    fila.first.click(force=True)
+    print(f"[OK] Código {codigo} seleccionado")
+
+
+# -------------------------------------------------
+# MAIN
+# -------------------------------------------------
 
 def main():
     with sync_playwright() as p:
+
         browser = p.chromium.launch(headless=False, slow_mo=500)
         page = browser.new_page()
 
+        # -----------------------------------------
+        # 1. Abrir portal
+        # -----------------------------------------
         print("[INFO] Abriendo portal...")
-        page.goto(URL, wait_until="load", timeout=60000)
+        page.goto(URL, wait_until="load")
         page.wait_for_timeout(8000)
 
-        print("[INFO] URL actual:", page.url)
-        print("[INFO] Título:", page.title())
+        frame = esperar_frame_principal(page)
+        print("[OK] Frame inicial listo")
 
-        # 1. Encontrar frame inicial
-        frame = esperar_frame_operativo(page)
-        print("[OK] Frame operativo inicial:", frame.url)
-
-        # 2. Seleccionar año
-        print(f"[INFO] Seleccionando año {ANIO}...")
-        frame.locator("#ctl00_CPH1_DrpYear").select_option(label=ANIO)
+        # -----------------------------------------
+        # 2. Año
+        # -----------------------------------------
+        seleccionar_dropdown(frame, "#ctl00_CPH1_DrpYear", ANIO)
         page.wait_for_timeout(5000)
-        print("[OK] Año seleccionado")
 
-        # 3. Volver a encontrar el frame, porque cambió
-        frame = esperar_frame_operativo(page)
-        print("[OK] Frame operativo después del año:", frame.url)
+        frame = esperar_frame_principal(page)
 
-        # 4. Seleccionar módulo
-        print(f"[INFO] Seleccionando módulo {MODULO}...")
-        frame.locator("#ctl00_CPH1_DrpActProy").select_option(label=MODULO)
+        # -----------------------------------------
+        # 3. Módulo
+        # -----------------------------------------
+        seleccionar_dropdown(frame, "#ctl00_CPH1_DrpActProy", MODULO)
         page.wait_for_timeout(5000)
-        print("[OK] Módulo seleccionado")
 
-        # 5. Volver a encontrar el frame otra vez
-        frame = esperar_frame_operativo(page)
-        print("[OK] Frame operativo después del módulo:", frame.url)
+        frame = esperar_frame_principal(page)
 
-        # 6. Seleccionar nivel de gobierno
-        print("[INFO] Activando botón Nivel de Gobierno...")
-        frame.locator("#ctl00_CPH1_BtnTipoGobierno").click()
+        # -----------------------------------------
+        # 4. Nivel de Gobierno
+        # -----------------------------------------
+        click_boton(frame, "#ctl00_CPH1_BtnTipoGobierno", "Nivel de Gobierno")
         page.wait_for_timeout(5000)
-        print("[OK] Botón Nivel de Gobierno activado")
 
-        # 7. Reubicar frame después del click
-        frame = esperar_frame_operativo(page)
-        print("[OK] Frame operativo después de Nivel de Gobierno:", frame.url)
+        frame = esperar_frame_principal(page)
 
-        # 8. Seleccionar la fila R: GOBIERNOS REGIONALES
-        elegir_fila_tabla(frame, OBJETIVO_NIVEL)
+        # -----------------------------------------
+        # 5. Seleccionar R
+        # -----------------------------------------
+        seleccionar_fila_tbl_data(frame, "R: GOBIERNOS REGIONALES")
         page.wait_for_timeout(5000)
-        print(f"[OK] Fila seleccionada: {OBJETIVO_NIVEL}")
 
-        # 9. Reubicar frame después de seleccionar la fila
-        frame = esperar_frame_operativo(page)
-        print("[OK] Frame operativo después de seleccionar R:", frame.url)
-        
-        
-        input("Presiona Enter para cerrar...")
-        browser.close()
-        
-    
+        frame = esperar_frame_principal(page)
+
+        # -----------------------------------------
+        # 6. Botón Gob.Reg.Mancom. (VISIBLE REAL)
+        # -----------------------------------------
+        click_boton(frame, "#ctl00_CPH1_BtnSector", "Gob.Reg.Mancom.")
+        page.wait_for_timeout(5000)
+
+        frame = esperar_frame_principal(page)
+
+      
+# -------------------------------------------------
+
 if __name__ == "__main__":
     main()
