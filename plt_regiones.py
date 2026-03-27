@@ -5,8 +5,15 @@ Created on Tue Mar 24 19:12:53 2026
 @author: Enzo
 """
 
+###############################################################################
+# SCRIPT PARA OBTENER LAS ACTIVIDADES OPERATIVAS DE UN DETERMINADO OEI
+###############################################################################
+
+
+
 from playwright.sync_api import sync_playwright
 import re
+import pandas as pd
 
 URL = "https://app.ceplan.gob.pe/ConsultaCEPLAN/consulta/Default.aspx"
 
@@ -53,7 +60,11 @@ def esperar_selector(frame, selector, timeout=15000):
 
 
 def normalizar_texto(texto):
-    return re.sub(r"\s+", " ", texto).strip().upper()
+    return re.sub(r"\s+", " ", texto).strip()
+
+
+def normalizar_texto_upper(texto):
+    return normalizar_texto(texto).upper()
 
 
 def seleccionar_dropdown(frame, selector, valor):
@@ -97,12 +108,12 @@ def seleccionar_fila_tbl_data(frame, texto):
 
     filas = frame.locator("#tbl_data tr")
     total = filas.count()
-    objetivo = normalizar_texto(texto)
+    objetivo = normalizar_texto_upper(texto)
 
     for i in range(total):
         try:
             fila = filas.nth(i)
-            contenido = normalizar_texto(fila.inner_text())
+            contenido = normalizar_texto_upper(fila.inner_text())
 
             if objetivo in contenido:
                 fila.click(force=True)
@@ -133,7 +144,7 @@ def seleccionar_99_gobiernos_regionales(frame):
 
 
 def seleccionar_fila_en_tablas_por_texto(frame, texto):
-    objetivo = normalizar_texto(texto)
+    objetivo = normalizar_texto_upper(texto)
     print(f"[INFO] Buscando fila por texto en tablas: {texto}")
 
     tablas = frame.locator("table")
@@ -148,7 +159,7 @@ def seleccionar_fila_en_tablas_por_texto(frame, texto):
             for i in range(total_filas):
                 try:
                     fila = filas.nth(i)
-                    contenido = normalizar_texto(fila.inner_text())
+                    contenido = normalizar_texto_upper(fila.inner_text())
 
                     if objetivo in contenido:
                         fila.click(force=True)
@@ -215,16 +226,10 @@ def seleccionar_oei_440_por_texto(frame, texto=OBJETIVO_OEI):
 # -------------------------------------------------
 
 def click_boton_aei_pei(frame):
-    """
-    En tu DOM aparece como BtnAccionesEstrategicas.
-    """
     click_boton(frame, "#ctl00_CPH1_BtnAccionesEstrategicas", "AEI-PEI")
 
 
 def seleccionar_aei_por_codigo(frame, codigo="440-AEI.01.01-48435"):
-    """
-    Selecciona el primer AEI usando el kCod visible en el DOM.
-    """
     print(f"[INFO] Buscando AEI por código: {codigo}")
 
     esperar_selector(frame, "#tbl_data")
@@ -239,11 +244,157 @@ def seleccionar_aei_por_codigo(frame, codigo="440-AEI.01.01-48435"):
 
 
 def seleccionar_aei_por_texto(frame, texto=OBJETIVO_AEI):
-    """
-    Fallback por texto visible del AEI.
-    """
     print(f"[INFO] Buscando AEI por texto: {texto}")
     seleccionar_fila_tbl_data(frame, texto)
+
+
+# -------------------------------------------------
+# AO-POI
+# -------------------------------------------------
+
+def click_boton_ao_poi(frame):
+    """
+    En tu DOM aparece como BtnActividadOperativa.
+    """
+    click_boton(frame, "#ctl00_CPH1_BtnActividadOperativa", "AO-POI")
+
+
+def extraer_dataframe_actividad_operativa(frame):
+    """
+    Extrae:
+    - actividad_operativa
+    - unidad_medida
+    - cantidad
+    - pim
+    - devengado
+
+    desde la tabla #tbl_data del nivel AO-POI.
+
+    Supuesto:
+    - cada AO principal está en una fila con onclick/kCod
+    - la fila siguiente contiene el detalle con Unidad de Medida y Cantidad
+    """
+    print("[INFO] Extrayendo DataFrame de Actividad Operativa...")
+
+    esperar_selector(frame, "#tbl_data")
+
+    filas = frame.locator("#tbl_data tr")
+    total_filas = filas.count()
+
+    registros = []
+
+    i = 0
+    while i < total_filas:
+        try:
+            fila = filas.nth(i)
+            onclick = fila.get_attribute("onclick") or ""
+
+            # Solo filas principales
+            if "kCod=" not in onclick:
+                i += 1
+                continue
+
+            celdas = fila.locator("td")
+            total_celdas = celdas.count()
+            if total_celdas == 0:
+                i += 1
+                continue
+
+            textos_celdas = []
+            for j in range(total_celdas):
+                txt = normalizar_texto(celdas.nth(j).inner_text())
+                textos_celdas.append(txt)
+
+            # ---------------------------------------
+            # 1. Actividad operativa
+            # ---------------------------------------
+            actividad = None
+            for txt in textos_celdas:
+                if not txt:
+                    continue
+                if re.fullmatch(r"[\d,.\-]+", txt):
+                    continue
+                actividad = txt
+                break
+
+            if actividad is None:
+                i += 1
+                continue
+
+            # ---------------------------------------
+            # 2. Métricas numéricas de la fila principal
+            # ---------------------------------------
+            # En tu tabla AO-POI, después de la descripción vienen columnas numéricas.
+            # Ajustamos por posición relativa:
+            #
+            # actividad | poi_aprobado | pia | poi_consistente | pim | poi_modificado | devengado | ejec | poi/pia
+            #
+            # Como la primera columna puede incluir radio/opciones, tomamos
+            # las últimas 8 celdas como bloque numérico si existen.
+            # Si la estructura cambiara, habría que recalibrar.
+            pim = None
+            devengado = None
+
+            # Extrae valores numéricos limpios
+            valores_numericos = []
+            for txt in textos_celdas:
+                if txt and re.fullmatch(r"[\d,.\-]+", txt):
+                    valores_numericos.append(txt)
+
+            # En AO-POI observado:
+            # normalmente aparecen 8 métricas numéricas tras la descripción
+            # índice esperado:
+            # 0 poi_aprobado
+            # 1 pia
+            # 2 poi_consistente_pia
+            # 3 pim
+            # 4 poi_modificado
+            # 5 devengado
+            # 6 ejec_pct
+            # 7 poi_pia_pct
+            if len(valores_numericos) >= 6:
+                pim = valores_numericos[3]
+                devengado = valores_numericos[5]
+
+            # ---------------------------------------
+            # 3. Fila detalle siguiente: unidad/cantidad
+            # ---------------------------------------
+            unidad_medida = None
+            cantidad = None
+
+            if i + 1 < total_filas:
+                fila_detalle = filas.nth(i + 1)
+                texto_detalle = normalizar_texto(fila_detalle.inner_text())
+
+                # Solo si es realmente la fila detalle asociada
+                if "UNIDAD DE MEDIDA:" in texto_detalle.upper() or "CANTIDAD:" in texto_detalle.upper():
+                    m_unidad = re.search(r"UNIDAD DE MEDIDA:\s*(.*?)(?:CANTIDAD:|$)", texto_detalle, flags=re.IGNORECASE)
+                    m_cantidad = re.search(r"CANTIDAD:\s*([^\s]+)", texto_detalle, flags=re.IGNORECASE)
+
+                    if m_unidad:
+                        unidad_medida = normalizar_texto(m_unidad.group(1))
+                    if m_cantidad:
+                        cantidad = normalizar_texto(m_cantidad.group(1))
+
+            registros.append({
+                "actividad_operativa": actividad,
+                "unidad_medida": unidad_medida,
+                "cantidad": cantidad,
+                "pim": pim,
+                "devengado": devengado
+            })
+
+        except Exception:
+            pass
+
+        i += 1
+
+    if not registros:
+        raise RuntimeError("No se pudieron extraer actividades operativas desde #tbl_data")
+
+    df = pd.DataFrame(registros)
+    print(f"[OK] DataFrame creado con {len(df)} filas")
+    return df
 
 
 # -------------------------------------------------
@@ -362,9 +513,31 @@ def main():
 
         print("[OK] Flujo completado hasta AEI-PEI / AEI.01.01-440")
 
+        # 19. Botón AO-POI
+        click_boton_ao_poi(frame)
+        page.wait_for_timeout(5000)
+        frame = esperar_frame_principal(page)
+
+        # 20. Esperar tabla de AO
+        esperar_selector(frame, "#tbl_data")
+        page.wait_for_timeout(3000)
+
+        # 21. Extraer DataFrame de Actividad Operativa
+        df_ao = extraer_dataframe_actividad_operativa(frame)
+
+        print("\n[OK] Primeras filas del DataFrame:")
+        print(df_ao.head(10))
+
+        # opcional: guardar
+        df_ao.to_csv("actividad_operativa_440.csv", index=False, encoding="utf-8-sig")
+        print("[OK] Archivo guardado: actividad_operativa_440.csv")
+
         input("Presiona Enter para cerrar...")
         browser.close()
 
 
 if __name__ == "__main__":
     main()
+    
+
+    
