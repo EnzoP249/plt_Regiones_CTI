@@ -11,7 +11,7 @@ import numpy as np
 from sklearn.preprocessing import StandardScaler
 from sklearn.cluster import KMeans
 from sklearn.metrics import silhouette_score
-
+import matplotlib.pyplot as plt
 # -----------------------------
 # 1. Copia del dataframe
 # -----------------------------
@@ -105,6 +105,101 @@ print(df_ml["cluster"].value_counts().sort_index())
 # -----------------------------
 perfil_clusters = df_ml.groupby("cluster")[X.columns].mean()
 print(perfil_clusters)
+
+
+conteo = df_ml["cluster"].value_counts().sort_index()
+
+plt.figure(figsize=(6,4))
+conteo.plot(kind="bar")
+plt.xlabel("Cluster")
+plt.ylabel("Número de regiones")
+plt.title("Distribución de regiones por cluster")
+plt.show()
+
+
+import matplotlib.pyplot as plt
+from sklearn.decomposition import PCA
+
+# -----------------------------
+# 1. PCA
+# -----------------------------
+pca = PCA(n_components=2)
+X_pca = pca.fit_transform(X_scaled)
+
+# -----------------------------
+# 2. Construir índice de capacidad
+# -----------------------------
+df_ml["indice_capacidad"] = X_scaled.mean(axis=1)
+
+# -----------------------------
+# 3. Ordenar clusters por capacidad
+# -----------------------------
+orden = df_ml.groupby("cluster")["indice_capacidad"].mean().sort_values()
+
+# Mapping cluster -> nivel
+mapping = {
+    orden.index[0]: "Débiles capacidades",
+    orden.index[1]: "Capacidades emergentes",
+    orden.index[2]: "Altas capacidades"
+}
+
+df_ml["nivel_capacidad"] = df_ml["cluster"].map(mapping)
+
+# -----------------------------
+# 4. Definir colores
+# -----------------------------
+colors = {
+    "Altas capacidades": "#1D3557",        # azul oscuro
+    "Capacidades emergentes": "#2A9D8F",   # verde
+    "Débiles capacidades": "#E63946"       # rojo
+}
+
+# -----------------------------
+# 5. Gráfico
+# -----------------------------
+plt.figure(figsize=(10,7))
+
+for nivel in ["Altas capacidades", "Capacidades emergentes", "Débiles capacidades"]:
+    idx = df_ml["nivel_capacidad"] == nivel
+    
+    plt.scatter(
+        X_pca[idx, 0],
+        X_pca[idx, 1],
+        label=nivel,
+        color=colors[nivel],
+        s=80,
+        edgecolor="black"
+    )
+
+# -----------------------------
+# 6. Etiquetas (regiones)
+# -----------------------------
+for i, txt in enumerate(df_ml["Departamento"]):
+    plt.annotate(
+        txt,
+        (X_pca[i,0], X_pca[i,1]),
+        fontsize=8,
+        xytext=(3,3),
+        textcoords="offset points"
+    )
+
+# -----------------------------
+# 7. Estética
+# -----------------------------
+plt.axhline(0, linestyle="--", linewidth=0.5, color="gray")
+plt.axvline(0, linestyle="--", linewidth=0.5, color="gray")
+
+plt.xlabel(f"PC1 ({pca.explained_variance_ratio_[0]*100:.1f}% varianza)")
+plt.ylabel(f"PC2 ({pca.explained_variance_ratio_[1]*100:.1f}% varianza)")
+
+plt.title("Estructura de capacidades regionales (CTI)", fontsize=13)
+
+plt.legend(title="Nivel de capacidad")
+plt.grid(alpha=0.2)
+plt.tight_layout()
+
+plt.show()
+
 
 
 
@@ -259,7 +354,8 @@ gores["texto_busqueda"] = gores["oei_norm"] + " " + gores["aei_norm"]
 terminos_cti = [
     "instrumentos de innovacion",
     "Clubes de Ciencia y Tecnologia",
-    "adopcion de tecnologias",    
+    "adopcion de tecnologias",
+    "tecnologic"    
 ]
 
 def score_cti(texto):
